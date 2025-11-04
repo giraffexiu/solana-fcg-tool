@@ -1,13 +1,12 @@
 use std::{env, fs, io::Write, path::PathBuf};
 use anyhow::Result;
-use hir::{Crate, ModuleDef, Semantics};
-use ide::{Analysis, AnalysisHost, CallHierarchyConfig, CallItem, FilePosition, LineCol};
+use hir::{Crate, ModuleDef};
+use ide::{Analysis, AnalysisHost, CallHierarchyConfig, CallItem, FilePosition, LineCol, TryToNav};
 use ide_db::{EditionedFileId, LineIndexDatabase};
 use load_cargo::{LoadCargoConfig, ProcMacroServerChoice, load_workspace};
 use project_model::{CargoConfig, ProjectManifest, ProjectWorkspace, RustLibSource};
 use rustc_hash::FxHashSet;
 use vfs::{AbsPathBuf, Vfs};
-use syntax::AstNode;
 use crate::cli::flags;
 
 #[derive(Debug, Clone)]
@@ -95,12 +94,6 @@ fn is_external_path(file_path: &str, project_root: &AbsPathBuf) -> bool {
         return true;
     }
     
-    // Check for Anchor framework external libraries (both conditions must be met)
-    if file_path.contains(".cargo/registry/") && 
-       (file_path.contains("anchor-") || file_path.contains("/anchor/")) {
-        return true;
-    }
-    
     // Check for build artifacts and dependencies within project
     if file_path.contains("/target/") ||
        file_path.contains("/build/") ||
@@ -170,36 +163,29 @@ fn extract_function_info(
     func: hir::Function,
     vfs: &Vfs,
 ) -> Result<Option<FunctionInfo>> {
-    // Create Semantics instance to handle proper text range mapping
-    let sema = Semantics::new(db);
-    
-    if let Some(source) = sema.source(func) {
-        let syntax_node = source.value.syntax();
-        
-        // Use original_range to map syntax node to its original file range
-        // This ensures text_range and line_index correspond to the same file
-        let original_range = sema.original_range(syntax_node);
-        let original_file_id = original_range.file_id;
-        let text_range = original_range.range;
-        
-        let file_id = original_file_id.file_id(db);
+    // Prefer NavigationTarget to locate the function name (IDENT) precisely.
+    if let Some(nav_res) = func.try_to_nav(db) {
+        let nav = nav_res.call_site;
+        let file_id = nav.file_id;
         let path = vfs.file_path(file_id);
         let file_path = path.to_string();
-        
-        // Now line_index and text_range are guaranteed to be from the same file
-        let line_index = db.line_index(original_file_id.file_id(db));
-        let line_col = line_index.line_col(text_range.start());
-        
+
+        // Use EditionedFileId for consistent line index and compute line/column
+        let editioned_file_id = EditionedFileId::current_edition(db, file_id);
+        let line_index = db.line_index(editioned_file_id.file_id(db));
+        let start = nav.focus_or_full_range().start();
+        let line_col = line_index.line_col(start);
+
         let function_info = FunctionInfo {
             name: func.name(db).display(db, syntax::Edition::CURRENT).to_string(),
             file_path,
-            line: line_col.line + 1, // Convert to 1-based
-            column: line_col.col + 1, // Convert to 1-based
+            line: line_col.line + 1,
+            column: line_col.col + 1,
         };
-        
+
         return Ok(Some(function_info));
     }
-    
+
     Ok(None)
 }
 

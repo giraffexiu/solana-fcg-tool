@@ -16,7 +16,7 @@ from .interface import (
 
 __title__ = "solana-fcg-tool"
 __description__ = "A comprehensive Rust project analyzer for Solana development"
-__version__ = "1.0.5"
+__version__ = "1.0.6"
 
 __all__ = [
     "SolanaAnalyzer",
